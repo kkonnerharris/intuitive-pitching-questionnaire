@@ -325,13 +325,14 @@
   </form>
   <section class="done" id="done" hidden>
     <h2>Thank you. Now send me your answers</h2>
-    <p class="status">Copy them into an email or text, or save them as a file. The app keeps grading the way it does now until I load your ranges.</p>
-    <div class="actions"><button type="button" class="primary" id="copy">Copy my answers</button><button type="button" id="save" hidden>Save as a file</button></div>
+    <p class="status">Save them as a PDF and email or text it to me, or copy them into a message. The app keeps grading the way it does now until I load your ranges.</p>
+    <div class="actions"><button type="button" class="primary" id="pdf">Save as PDF</button><button type="button" id="copy">Copy my answers</button></div>
     <p class="status" id="msg" role="status"></p>
     <textarea id="out" readonly aria-label="Your answers"></textarea>
   </section>
 </div>
-<div class="bar"><div><span class="progress" id="progress">0 of 35 ranges answered</span><div class="actions"><button type="button" class="primary" id="finish">Finish</button></div></div></div>
+<div class="bar"><div><span class="progress" id="progress">0 of 35 ranges answered</span><div class="actions"><button type="button" id="pdf-bar">Save as PDF</button><button type="button" class="primary" id="finish">Finish</button></div></div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
   const KEY = "ip-optimal-ranges-v1";
   const form = document.getElementById("form");
@@ -423,22 +424,56 @@
       () => { out.focus(); out.select(); msg.textContent = "Your answers are selected below. Press Ctrl+C (or Cmd+C) to copy them."; },
     );
   });
-  // Saving a file needs the viewer's download permission; the button appears only where it works.
-  (async () => {
-    const downloads = await window.claude?.use?.("downloads");
-    if (!downloads) return;
-    const save = document.getElementById("save");
-    save.hidden = false;
-    save.addEventListener("click", async () => {
-      out.value = asText();
-      try {
-        await downloads.save({ filename: "intuitive-pitching-optimal-ranges.txt", data: out.value });
-        msg.textContent = "Saved. Attach the file to an email or text to send it.";
-      } catch (e) {
-        msg.textContent = e && e.code === "declined" ? "Not saved. You can copy your answers instead." : "Saving isn't available here. Use Copy my answers instead.";
+  // Save as PDF: her answers as a clean document. On a normal web page it downloads straight away;
+  // inside a claude.ai page it asks the viewer first (the downloads capability).
+  const PDF_NAME = "Intuitive-Pitching-Coach-Answers.pdf";
+  // The PDF's built-in font only has basic Latin characters; swap the few others the form uses.
+  const plainText = (s) => s.replace(/[\u2212\u2013\u2014]/g, "-").replace(/\u2264/g, "<=").replace(/\u2265/g, ">=").replace(/\u2192/g, "->").replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"').replace(/\u2026/g, "...").replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/g, "");
+  function buildPdf() {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: "pt", format: "letter" });
+    const M = 54, W = doc.internal.pageSize.getWidth() - M * 2, H = doc.internal.pageSize.getHeight();
+    let y = M;
+    const line = (text, { size = 10, bold = false, gap = 3, color = [22, 32, 43] } = {}) => {
+      doc.setFont("helvetica", bold ? "bold" : "normal"); doc.setFontSize(size); doc.setTextColor(...color);
+      for (const part of doc.splitTextToSize(plainText(text), W)) {
+        if (y + size > H - M) { doc.addPage(); y = M; }
+        doc.text(part, M, y); y += size + gap;
       }
-    });
-  })();
+    };
+    line("Intuitive Pitching", { size: 11, bold: true, color: [94, 115, 0] });
+    line("Coach questionnaire: ranges, report cards and health data", { size: 16, bold: true, gap: 6 });
+    const lines = asText().split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i], next = lines[i + 1] ?? "";
+      if (i === 0) continue;                               // title, already written
+      if (/^-+$/.test(l)) continue;                        // underline under a section name
+      if (/^-+$/.test(next) && l.trim()) { y += 8; line(l, { size: 12, bold: true, color: [94, 115, 0], gap: 5 }); continue; }
+      if (!l.trim()) { y += 4; continue; }
+      const answer = /^\s{2}/.test(l);
+      line(l.trim(), { size: answer ? 10 : 10, bold: !answer && !/:\s/.test(l), color: answer ? [85, 96, 107] : [22, 32, 43] });
+    }
+    return doc;
+  }
+  let downloadsNs = null;
+  (async () => { downloadsNs = await window.claude?.use?.("downloads") ?? null; })();
+  async function savePdf() {
+    out.value = asText();
+    if (!window.jspdf) { msg.textContent = "The PDF maker didn't load. Check your connection, or use Copy my answers instead."; return; }
+    const doc = buildPdf();
+    try {
+      if (downloadsNs) {
+        await downloadsNs.save({ filename: PDF_NAME, data: doc.output("blob") });
+      } else {
+        doc.save(PDF_NAME);
+      }
+      msg.textContent = "PDF saved. Attach it to an email or text to send it.";
+    } catch (e) {
+      msg.textContent = e && e.code === "declined" ? "Not saved. You can copy your answers instead." : "Saving isn't available here. Use Copy my answers instead.";
+    }
+  }
+  document.getElementById("pdf").addEventListener("click", savePdf);
+  document.getElementById("pdf-bar").addEventListener("click", () => { document.getElementById("finish").click(); savePdf(); });
 </script>
 
 </body>
